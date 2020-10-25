@@ -1,0 +1,67 @@
+//GRACE TWS
+var roi = indus
+Map.centerObject(roi)
+Map.addLayer(roi)
+Map.addLayer(ps)
+
+
+var Date_Start = ee.Date('2002-04-01')
+var End_Date = ee.Date('2016-12-31')
+var gr = grace.filterDate(Date_Start, End_Date).filterBounds(roi)
+             
+function meancalc(img){
+  var marea = img.reduceRegion({
+    reducer: ee.Reducer.mean(), 
+    geometry: roi, 
+    scale: 25000,
+    maxPixels: 10e9
+  })//.get('lwe_thickness_jpl');
+  
+  return img.set('Date', ee.Date(img.get('system:time_start'))
+  .format('YYYY-MM-dd')).set('Area', marea)
+}  
+
+var final = gr.map(meancalc)
+
+
+var chart = ui.Chart.image.series({ 
+  imageCollection: final,
+  region: roi,
+  reducer: ee.Reducer.mean(),
+  scale: 25000
+}).setOptions({
+          title: 'GRACE TWS Anomaly Time Series',
+          vAxis: {title: 'TWS Anomaly (cm of equivalent water thickness)'},
+          hAxis: {title: 'Month'}
+          
+})
+print(chart)
+
+
+function createTimeBand(img) {
+  var year = ee.Date(img.get('Date')).difference(ee.Date('2002-04-01'), 'year');
+  return ee.Image(year).float().addBands(img);
+}
+// var imageseries = dates.map(genImage)
+// print(imageseries)
+var collection = ee.ImageCollection(final).select('lwe_thickness_csr').map(createTimeBand);
+print(collection)
+
+var fit = collection.reduce(ee.Reducer.linearFit());
+
+var boxcar = ee.Kernel.square({
+  radius: 10, units: 'pixels', magnitude: 1
+});
+
+// Smooth the image by convolving with the boxcar kernel.
+// var smooth = imageRGB.convolve(boxcar);
+var fit=fit.clip(roi).select('scale')//.convolve(boxcar)
+print (fit)
+Map.addLayer(fit.clip(roi),vis)
+
+ Export.image.toDrive({
+  image: fit,
+  description: 'gracetrend',
+  scale: 25000,
+  region: roi
+});
