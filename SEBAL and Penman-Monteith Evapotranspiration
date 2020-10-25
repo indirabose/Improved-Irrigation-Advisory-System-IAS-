@@ -1,0 +1,576 @@
+var ROI=sargodha;
+var ROI_2=sargodha;
+var res= 1000
+var startMonth =1
+var endMonth = 2
+// Run the loop
+for (var iterMM= startMonth; iterMM <= endMonth; iterMM = iterMM + 1) {
+print(iterMM)  
+var startDate = ee.Date.fromYMD(2015, ee.Number(iterMM), 1);
+var endDate = ee.Date.fromYMD(2015, ee.Number(iterMM), 28);
+
+
+print(startDate)
+print(endDate)
+
+var NDVIhot_low = 0.03               // Lower NDVI treshold for hot pixels
+//var NDVIhot_high = 0.25              // Higher NDVI treshold for hot pixels (Default)
+var NDVIhot_high = 0.25              // Higher NDVI treshold for hot pixels
+var Cold_Pixel_Constant=0.50        
+//var Hot_Pixel_Constant=2.0      (Default)
+var Hot_Pixel_Constant=2
+/////////////////********END of Module (1)********/////////////////
+
+/////////////////********Module (2) Satellite Image********/////////////////
+// Reference a Landsat scene.
+var img = ee.ImageCollection("LANDSAT/LC08/C01/T1_TOA")
+		.filterDate(startDate, endDate)
+		.filterBounds(ROI)
+		.filterMetadata('CLOUD_COVER', 'less_than', 20)
+var composite = img.median();
+var sample = ee.Image(img.first());
+//print(img)
+Map.addLayer(composite.clip(ROI))
+/////////////////********END of Module (2)********/////////////////
+
+/////////////////********Module (3) Forcing Data********/////////////////
+var gldas = ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H")
+		.filterDate(startDate, endDate)
+		.filterBounds(ROI)
+var gldas_composite=gldas.median()
+var temp=gldas_composite.select('Tair_f_inst')  // at 2 m height
+var maxtemp=gldas.select('Tair_f_inst').max()
+var mintemp=gldas.select('Tair_f_inst').min()
+var wind=gldas_composite.select('Wind_f_inst')   // at 10 m height
+var QH=gldas_composite.select('Qair_f_inst')
+var PS=gldas_composite.select('Psurf_f_inst')
+var SW=gldas_composite.select('SWdown_f_tavg')
+var LW=gldas_composite.select('LWdown_f_tavg')
+//print(gldas)
+// equations for saturated vapor pressure has temperature in celsius
+var tmp1=ee.Image.constant(17.67).multiply(temp.subtract(ee.Image.constant(273.15)))
+var tmp2=temp.add(ee.Image.constant(243.5-273.15))
+var tmp3=(tmp1.divide(tmp2)).exp()
+var es=ee.Image.constant(6.112).multiply(tmp3)    // Unit is millibar (mb)
+var tmp4=QH.multiply(PS)
+var tmp5=(ee.Image.constant(0.378).multiply(QH)).add(ee.Image.constant(0.622)) 
+var e=tmp4.divide(tmp5)
+// Unit is Pascal; divide by 100 to convert to millibar (mb)
+e=e.divide(ee.Image.constant(100))
+var RH=e.divide(es).multiply(ee.Image.constant(100))
+RH=RH.rename('RH')
+
+// Reproject Data to 30m pixel spacing (a bilinear resampled image)
+var temp_30m = temp.clip(ROI).resample('bilinear').reproject({
+  crs: sample.select('B1').projection().crs(),
+  scale: res
+});
+var maxtemp_30m = maxtemp.clip(ROI).resample('bilinear').reproject({
+  crs: sample.select('B1').projection().crs(),
+  scale: res
+});
+var mintemp_30m = mintemp.clip(ROI).resample('bilinear').reproject({
+  crs: sample.select('B1').projection().crs(),
+  scale: res
+});
+var PS_30m = PS.clip(ROI).resample('bilinear').reproject({
+  crs: sample.select('B1').projection().crs(),
+  scale: res
+});
+var LW_30m = LW.clip(ROI).resample('bilinear').reproject({
+  crs: sample.select('B1').projection().crs(),
+  scale: res
+});
+var SW_30m = SW.clip(ROI).resample('bilinear').reproject({
+  crs: sample.select('B1').projection().crs(),
+  scale: res
+});
+var wind_30m = wind.clip(ROI).resample('bilinear').reproject({
+  crs: sample.select('B1').projection().crs(),
+  scale: res
+});
+var RH_30m = RH.clip(ROI).resample('bilinear').reproject({
+  crs: sample.select('B1').projection().crs(),
+  scale: res
+});
+var e_30m = e.clip(ROI).resample('bilinear').reproject({
+  crs: sample.select('B1').projection().crs(),
+  scale: res
+});
+var es_30m = es.clip(ROI).resample('bilinear').reproject({
+  crs: sample.select('B1').projection().crs(),
+  scale: res
+});
+var srtm= ee.Image("USGS/SRTMGL1_003")
+          //.filterBounds(Delta)
+//Map.addLayer(srtm.clip(ROI_2),{},'srtm')          
+var slope=ee.Terrain.slope(srtm);
+var aspect=ee.Terrain.aspect(srtm);
+var DEM_30m = srtm.clip(ROI).resample('bilinear').reproject({
+  crs: sample.select('B1').projection().crs(),
+  scale: res
+});
+
+//Map.addLayer(es_30m.clip(ROI_2),{},'dem30')
+
+var proj = DEM_30m.projection()
+var latlon = ee.Image.pixelLonLat().reproject({
+  crs: sample.select('B1').projection().crs(),
+  scale: res
+});
+var LAT=latlon.select('latitude').reproject({
+  crs: sample.select('B1').projection().crs(),
+  scale: res
+});
+var LON=latlon.select('longitude').reproject({
+  crs: sample.select('B1').projection().crs(),
+  scale: res
+});
+
+/////////////////********END of Module (3) Forcing Data********/////////////////
+
+/////////////////********Module (4) Albedo********/////////////////
+var Surf_albedo=composite.select('B1').multiply(0.130).add(composite.select('B2').multiply(0.115)).add(composite.select('B3').multiply(0.143)).add(composite.select('B4').multiply(0.180)).add(composite.select('B5').multiply(0.281)).add(composite.select('B6').multiply(0.108)).add(composite.select('B7').multiply(0.042)).subtract(0.03).divide(ee.Number(0.89).pow(ee.Number(0.89)))
+Surf_albedo=Surf_albedo.rename('Albedo')
+var maskLow=Surf_albedo.gt(0.00)
+var maskHigh=Surf_albedo.lt(0.60)
+var Surf_albedo_mask = Surf_albedo.updateMask(maskLow)
+Surf_albedo_mask=Surf_albedo_mask.unmask(0.00)
+Surf_albedo_mask = Surf_albedo_mask.updateMask(maskHigh)
+Surf_albedo_mask=Surf_albedo_mask.unmask(0.60)
+/////////////////********END of Module (4) Albedo********/////////////////
+
+/////////////////********Module (5) Surface Temperature********/////////////////
+var NDVI=composite.normalizedDifference(['B5', 'B4']);
+var tmp1=ee.Image.constant(0.8).subtract(NDVI.select('nd'))
+var tmp2=ee.Image.constant(0.8).subtract(ee.Image.constant(0.125))
+var vegt_cover = ee.Image.constant(1.0).subtract((tmp1.divide(tmp2)).pow(ee.Image.constant(0.70)))
+vegt_cover=vegt_cover.rename('vegt_cover')
+var LAI_1 = (((vegt_cover.subtract(ee.Image.constant(1)))).multiply(ee.Image.constant(-1))).log().divide(ee.Image.constant(-0.45))
+LAI_1=LAI_1.rename('LAI')
+var LAIHigh=LAI_1.lt(8.0)
+var LAI_1=LAI_1.updateMask(LAIHigh)
+var LAI_1=LAI_1.unmask(8.0)
+var tmp1=(NDVI.pow(ee.Image.constant(3))).multiply(ee.Image.constant(9.519))
+var tmp2=(NDVI.pow(ee.Image.constant(2))).multiply(ee.Image.constant(0.104))
+var tmp3=NDVI.multiply(ee.Image.constant(1.236))
+var tmp4=ee.Image.constant(0.257)
+var LAI_2 =tmp1.add(tmp2).add(tmp3).add(tmp4)
+var tmp=LAI_1.add(LAI_2)
+var LAI=tmp.divide(ee.Image.constant(2))
+var tir_emis = ee.Image.constant(1.009).add(ee.Image.constant(0.047).multiply(NDVI.log()))
+var b10_emissivity = LAI 
+var emissLow=LAI.lte(3.0)
+var emissValue1=ee.Image.constant(0.95).add(ee.Image.constant(0.01).multiply(LAI))
+b10_emissivity=b10_emissivity.updateMask(emissLow).unmask(emissValue1)
+var emissHigh=LAI.gt(3.0)
+var emissValue2=ee.Image.constant(0.98)
+b10_emissivity=b10_emissivity.updateMask(emissHigh).unmask(emissValue2)
+var Temp_TOA_10=composite.select('B10')
+var Temp_TOA_11=composite.select('B11')
+var tt1=ee.Image.constant(1.378).multiply((Temp_TOA_10).subtract(Temp_TOA_11))
+var tt2=ee.Image.constant(0.183).multiply((Temp_TOA_10.subtract(Temp_TOA_11)).pow(ee.Image.constant(2)))
+var tt3=(ee.Image.constant(54.30).subtract(ee.Image.constant(2.238).multiply(e_30m))).multiply(ee.Image.constant(1).subtract(b10_emissivity))
+var Surface_temp = Temp_TOA_10.add(tt1).add(tt2).add(tt3).subtract(ee.Image.constant(0.268))
+/////////////////********END of Module (5) Surface Temperature********/////////////////
+//Map.addLayer( Temp_TOA_10,{},'check')
+var check= Temp_TOA_10.reduceRegion({
+  reducer: ee.Reducer.median(),
+  geometry: ROI_2,
+  scale: res,
+  maxPixels: 1e11
+});
+
+//print('check',check)
+/////////////////********Module (6) Daily Radiation (mm/day)********/////////////////
+// Daily 24 hr radiation - For flat terrain only !
+// 1) Shortwave Radiation
+var featureROI=ee.Algorithms.Feature(ROI)
+var centroid = featureROI.centroid(10);
+//print(centroid)
+var cenLAT=centroid.geometry().coordinates().get(1).getInfo()
+var cenLON=centroid.geometry().coordinates().get(0).getInfo()
+var deg2rad=ee.Image.constant(3.14).divide(ee.Image.constant(180))
+var phi=LAT.multiply(deg2rad)
+var sortImg = img.sort('system:time_start', false);
+var listOfImages = sortImg.toList(sortImg.size());
+var recentImg=ee.Image(listOfImages.get(0))
+var DOY=recentImg.date().getRelative('day', 'year');
+var tmp=(2*3.14*DOY.getInfo()/365-1.39)
+var delta=ee.Number(0.409).multiply(ee.Number(tmp).sin())
+
+var tmp=ee.Number(DOY.getInfo()*2*3.14/365).cos()
+var tmp1=delta.tan()
+//print(tmp1.getInfo())
+var tmp2=ee.Number(-1).multiply(ee.Number(cenLAT*3.14/180).tan())
+//print(cenLAT)
+var ws=(tmp1.multiply(tmp2)).acos()
+
+var dr=ee.Number(1).add(ee.Number(0.33).multiply(tmp))
+var Gsc=1367
+var tmp1=phi.cos().multiply(ee.Image.constant(delta).cos()).multiply(ee.Image.constant(ws).sin())
+var tmp2=phi.sin().multiply(ee.Image.constant(delta).sin()).multiply(ee.Image.constant(ws))
+var Ra=ee.Image.constant(Gsc).multiply(ee.Image.constant(dr)).divide(3.14).multiply(tmp1.add(tmp2))
+var tmp=ee.Number(2).multiply(ee.Number(10).pow(-5))
+var Rs=(ee.Image.constant(0.75).add(ee.Image.constant(tmp).multiply(DEM_30m))).multiply(Ra)
+var Rns=(ee.Image.constant(1).subtract(Surf_albedo_mask)).multiply(Rs)
+// 2) Longwave Radiation
+var ea=e_30m.multiply(0.10) // convert vapour pressure to kpa from milli bars
+var sigma=ee.Number(10).pow(-9).multiply(ee.Number(4.89802))
+var tmp1=(mintemp_30m.pow(4).add(maxtemp_30m.pow(4))).divide(ee.Image.constant(2))
+var tmp2=ee.Image.constant(0.34).subtract((ea.sqrt()).multiply(0.14))
+var Rnl=ee.Image.constant(sigma).multiply(tmp1).multiply(tmp2)
+// 3) Net Radiation
+var Rn=Rns.subtract(Rnl)
+/////////////////********END of Module (6) Daily Radiation (mm/day)********/////////////////
+//print(Rn)
+//Map.addLayer(Rns,{},'Rns')
+/////////////////********Module (7) Soil Heat Flux (mm/day)********/////////////////
+// Soil Heat Flux Radiation (G)
+var tmp1=ee.Image.constant(0.0038).add(ee.Image.constant(0.0074).multiply(Surf_albedo_mask))
+var tmp2=ee.Image.constant(1).subtract(ee.Image.constant(0.978).multiply((NDVI).pow(4)))
+var tmp3=Surface_temp.subtract(ee.Image.constant(273.15))
+var G= tmp1.multiply(tmp2).multiply(tmp3)
+/////////////////********END of Module (7) Soil Heat Flux (mm/day)********/////////////////
+//print('G',G)
+/////////////////********Module (8) Selection of Cold/Hot Pixels********/////////////////
+var maxNDVI= NDVI.reduceRegion({
+  reducer: ee.Reducer.max(),
+  geometry: ROI,
+  scale: res,
+  maxPixels: 1e11
+});
+var avgNDVI= NDVI.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: ROI,
+  scale: res,
+  maxPixels: 1e11
+});
+var minNDVI= NDVI.reduceRegion({
+  reducer: ee.Reducer.min(),
+  geometry: ROI,
+  scale: res,
+  maxPixels: 1e11
+});
+var stdNDVI= NDVI.reduceRegion({
+  reducer: ee.Reducer.stdDev(),
+  geometry: ROI,
+  scale: res,
+  maxPixels: 1e11
+});
+
+var zeroCold=maxNDVI.get('nd').getInfo()-Cold_Pixel_Constant*stdNDVI.get('nd').getInfo()
+var maskNDVI=NDVI.select('nd').gt(ee.Number(zeroCold))
+var cold_pixels_vegetation =Surface_temp.select('B10').rename('cold')
+cold_pixels_vegetation=cold_pixels_vegetation.updateMask(maskNDVI)
+//cold_pixels_vegetation=cold_pixels_vegetation.unmask(0)
+var tempCold= cold_pixels_vegetation.reduceRegion({
+  reducer: ee.Reducer.min(),
+  geometry: ROI,
+  scale: res,
+  maxPixels: 1e11
+});
+//print('zerocold',zeroCold)
+//print('dt',tempCold)
+var hot_pixels =Surface_temp.select('B10').rename('hot')
+var hotLow=hot_pixels.gt(ee.Number(NDVIhot_low))
+var hotHigh=hot_pixels.lt(ee.Number(NDVIhot_high))
+var hot_pixels_mask = hot_pixels.updateMask(hotLow)
+hot_pixels_mask=hot_pixels_mask.unmask(ee.Number(NDVIhot_low))
+hot_pixels_mask =hot_pixels_mask.updateMask(hotHigh)
+hot_pixels_mask=hot_pixels_mask.unmask(ee.Number(NDVIhot_high))
+var avgtempHot= hot_pixels.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: ROI,
+  scale: res,
+  maxPixels: 1e11
+});
+var stdtempHot= hot_pixels.reduceRegion({
+  reducer: ee.Reducer.stdDev(),
+  geometry: ROI,
+  scale: res,
+  maxPixels: 1e11
+});
+var tempHot=ee.Number(avgtempHot.get('hot').getInfo()).add(ee.Number(Hot_Pixel_Constant).multiply(stdtempHot.get('hot').getInfo()))
+/////////////////********END of Module (8) Selection of Cold/Hot Pixels********/////////////////
+//print('tempHot',tempHot)
+/////////////////********Module (9) Sensible Heat Flux********/////////////////
+
+// calculate the windspeed and friction by using the Raupach or NDVI model
+// constants
+var k_vk = ee.Number(0.41)      // Von Karman constant
+var h_grass = ee.Number(0.12)   // Grass height (m)
+var cd = ee.Number(53)          // Free parameter for displacement height, default = 20.6
+var zx=ee.Number(10)    // wind speed height in meters
+// Surface roughness using NDVI Model (other option is Raupach Model)
+// a, b need to be determined by fitting relation between ln(zom) vs NDVI/ α. Using zom=0.12h (h=vegetation height)
+// LAI method: zom=0.018 × LAI
+var tmp=ee.Image.constant(1.096).multiply(NDVI.select('nd')).divide(Surf_albedo_mask)
+var zom_NDVI =(tmp.subtract(ee.Image.constant(5.307))).exp() 
+//var zom_NDVI[water_mask == 1.0] = 0.001
+//Map.addLayer(zom_NDVI)
+var maxzomNDVI= zom_NDVI.lt(10.0)
+var zom_NDVI=zom_NDVI.updateMask(maxzomNDVI)
+zom_NDVI=zom_NDVI.unmask(10.0)
+var Surf_roughness = zom_NDVI
+var zom_grass = ee.Number(0.123).multiply(h_grass)
+// Friction velocity for grass (m/s):
+var tmp1=ee.Image.constant(k_vk).multiply(wind_30m)
+var tmp2=(zx.divide(zom_grass)).log()
+var ustar_grass = tmp1.divide(ee.Image.constant(tmp2))
+// Wind speed (m/s) at the "blending height" (200m):
+var tmp=(ee.Number(200).divide(zom_grass)).log()
+var u_200 = ustar_grass.multiply(tmp).divide(ee.Image.constant(k_vk))
+var tmp=(ee.Image.constant(200).divide(Surf_roughness)).log()
+var ustar = ee.Image.constant(k_vk).multiply(u_200).divide(tmp)
+// areodynamic rah (at stable conditions)
+var tmp1=(ee.Image.constant(2).divide(ee.Image.constant(0.01))).log()
+var tmp2=ee.Image.constant(k_vk).multiply(ustar)
+var rah= tmp1.divide(tmp2)
+// Generally, air temperature decreases by about 0.65 celsius when elevation increases by 100 m under neutral stability conditions.
+var Temp_lapse_rate = 0.0065   // or 0.01199   # Temperature lapse rate (°K/m)
+var tmp=(ee.Image.constant(293).subtract(ee.Image.constant(Temp_lapse_rate).multiply(DEM_30m))).divide(ee.Image.constant(293))
+var Pair = ee.Image.constant(101.3).multiply(tmp.pow(5.26))   //units:KPa
+//Map.addLayer(Pair)
+// Air denisty using Ideal gas law
+var air_dens = Pair.multiply(ee.Image.constant(1000)).divide(ee.Image.constant(1.01).multiply(Surface_temp).multiply(ee.Image.constant(287)))
+
+var srtmclip=srtm.clip(ROI_2)
+//Map.addLayer(srtmclip,{},'srtmclip')
+var DEM_300m = srtmclip.resample('bilinear')
+//Map.addLayer(DEM_30m.clip(ROI_2),{},'demclip')
+var avgH= srtmclip.reduceRegion({
+  reducer: ee.Reducer.median(),
+  geometry: ROI_2,
+  scale: res,
+  maxPixels: 1e11
+});
+
+//print('srtm',srtmclip)
+//print('avgH',avgH)
+
+//var DEM_30m = srtm.clip(ROI).resample('bilinear').reproject({
+//  crs: sample.select('B1').projection().crs(),
+//  scale: 30
+//});
+
+
+//Map.addLayer(air_dens)
+//var air_dens = PS_30m.divide(ee.Image.constant(1.01).multiply(Surface_temp).multiply(ee.Image.constant(287)))
+//Map.addLayer(air_dens)
+var dT_init = (Rn.subtract(G)).multiply(rah).divide(air_dens.multiply(ee.Image.constant(1004)))
+dT_init=dT_init.select('constant').rename('dt')
+var medDT= dT_init.reduceRegion({
+  reducer: ee.Reducer.median(),
+  geometry: ROI,
+  scale: res,
+  maxPixels: 1e11
+});
+//print('medDt',medDT)
+//var slope_dt = ee.Number(medDT.get('dt').getInfo()).divide(tempHot.subtract(tempCold.get('cold')))
+var tmp=tempHot.getInfo()-(tempCold.get('cold').getInfo())
+//print(tmp)
+var slope_dt = dT_init.divide(ee.Image.constant(tmp))
+//print('slope',slope_dt)
+//var offset_dt = ee.Number(medDT.get('dt').getInfo()).subtract(slope_dt.multiply(tempHot))
+var offset_dt = dT_init.subtract(slope_dt.multiply(ee.Image.constant(tempHot.getInfo())))
+//var dT=ee.Image.constant(offset_dt).add(ee.Image.constant(slope_dt).multiply(Surface_temp))
+var dT=offset_dt.add(slope_dt.multiply(Surface_temp))
+//print('dT',dT)
+// Sensible Heat
+var H = air_dens.multiply(ee.Image.constant(1004)).multiply(dT).divide(rah)
+
+
+// Iterative process is required here for correcting ustar & rah
+var start =1
+var end = 5
+// Run the loop
+for (var iter= start; iter <= end; iter = iter + 1) {
+// Monin-Obukhov length (m):
+var tmp1=ee.Image.constant(-1004).multiply(air_dens).multiply(ustar.pow(3)).multiply(Surface_temp)
+var tmp2=ee.Image.constant(k_vk).multiply(ee.Image.constant(9.81)).multiply(H)
+var L_MO = tmp1.divide(tmp2)
+// L_MO < 0 Unstable, L_MO > 0 Stable, L_MO = 0 Neutral.
+// Stability Condition
+var psi_m200_stable = ee.Image.constant(-10).divide(L_MO)
+var psi_h2_stable = ee.Image.constant(-10).divide(L_MO)
+var psi_h001_stable = ee.Image.constant(-0.05).divide(L_MO)
+// Neutral Condition
+var psi_m200_neutral = ee.Image.constant(0)
+var psi_h2_neutral = ee.Image.constant(0)
+var psi_h001_neutral = ee.Image.constant(0)
+// UnStability Condition
+var tmp=ee.Image.constant(1).subtract(ee.Image.constant(16).multiply(ee.Image.constant(2)).divide(L_MO))
+var x2 = tmp.pow(0.25)  // x at 2m
+var tmp=ee.Image.constant(1).subtract(ee.Image.constant(16).multiply(ee.Image.constant(200)).divide(L_MO))
+var x200 = tmp.pow(0.25)  // x at 200m
+var tmp=ee.Image.constant(1).subtract(ee.Image.constant(16).multiply(ee.Image.constant(0.01)).divide(L_MO))
+var x001 = tmp.pow(0.25)  // x at 0.01m
+var tmp=(ee.Image.constant(1).add(x2.pow(2))).divide(ee.Image.constant(2)).log()
+var psi_h2_unstable= ee.Image.constant(2).multiply(tmp)
+var tmp=(ee.Image.constant(1).add(x001.pow(2))).divide(ee.Image.constant(2)).log()
+var psi_h001_unstable= ee.Image.constant(2).multiply(tmp)
+
+var tmp1=(ee.Image.constant(1).add(x200)).divide(ee.Image.constant(2)).log()
+var tmp2=(ee.Image.constant(1).add(x200.pow(2))).divide(ee.Image.constant(2)).log()
+var tmp3=ee.Image.constant(2).multiply(x200.atan())
+var psi_m200_unstable= (ee.Image.constant(2).multiply(tmp1)).add(tmp2).subtract(tmp3).add(ee.Image.constant(0.5).multiply(Math.PI))
+var tmp1=ee.Image.constant(k_vk).multiply(u_200)
+var tmp2=((ee.Image.constant(200).divide(Surf_roughness)).log()).subtract(psi_m200_unstable)
+var ustar_corr_unstable = tmp1.divide(tmp2)
+var tmp2=((ee.Image.constant(200).divide(Surf_roughness)).log()).subtract(psi_m200_stable)
+var ustar_corr_stable = tmp1.divide(tmp2)
+var ustar_corr=ustar_corr_unstable
+var L_unstable=L_MO.lt(1.0)
+var ustar_corr_mask=ustar_corr.updateMask(L_unstable)  //masking stable pixels
+var ustar_corr=ustar_corr_mask.unmask(ustar_corr_stable)
+var tmp1=((ee.Image.constant(2).divide(ee.Image.constant(0.01))).log()).subtract(psi_h2_stable).add(psi_h001_stable)
+var tmp2=ee.Image.constant(k_vk).multiply(ustar_corr)
+var rah_corr_stable=tmp1.divide(tmp2)
+var tmp1=((ee.Image.constant(2).divide(ee.Image.constant(0.01))).log()).subtract(psi_h2_unstable).add(psi_h001_unstable)
+var rah_corr_unstable=tmp1.divide(tmp2)
+var rah_corr=rah_corr_unstable
+var L_unstable=L_MO.lt(1.0)
+var rah_corr_mask=rah_corr.updateMask(L_unstable)  //masking stable pixels
+var rah_corr=rah_corr_mask.unmask(rah_corr_stable)
+var dT_corr = (Rn.subtract(G)).multiply(rah_corr).divide(air_dens.multiply(ee.Image.constant(1004)))
+dT_corr=dT_corr.select('constant').rename('dt')
+var medDT= dT_corr.reduceRegion({
+  reducer: ee.Reducer.median(),
+  geometry: ROI,
+  scale: res,
+  maxPixels: 1e11
+});
+var slope_dt= ee.Number(medDT.get('dt').getInfo()).divide(tempHot.subtract(tempCold.get('cold')))
+var offset_dt = ee.Number(medDT.get('dt').getInfo()).subtract(slope_dt.multiply(tempHot))
+var dT=ee.Image.constant(offset_dt).add(ee.Image.constant(slope_dt).multiply(Surface_temp))
+// Sensible Heat
+var H = air_dens.multiply(ee.Image.constant(1004)).multiply(dT).divide(rah_corr)
+
+var dT_avg= dT.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: ROI_2,
+  scale: res,
+  maxPixels: 1e11
+});
+
+//print('avgH',dT_avg)
+
+//print('Iteration No. ' + iter)
+}
+
+var H_mask=H.updateMask(H.gte(0))
+var H_mask=H_mask.unmask(0)
+
+
+/////////////////********END of Module (9) Sensible Heat Flux********/////////////////
+//Map.addLayer(Rn,{},'Rn')
+//Map.addLayer(H,{},'H')
+//Map.addLayer(G,{},'G')
+/////////////////********Module (10) Reference ET********/////////////////
+// Reference Evapotranspiration (Penman-Monteith)
+// Effective leaf area index involved, see Allen et al. (2006):
+
+var tmp=(ee.Image.constant(0.30).multiply(LAI)).add(ee.Image.constant(1.2))
+var LAI_eff = LAI.divide(tmp)
+var rl = 130 // Bulk stomatal resistance of the well-illuminated leaf (s/m) [See box 5 in FAO56]
+var  rs_min = ee.Image.constant(rl).divide(LAI_eff)  // Min (Bulk) surface resistance (s/m)
+// Latent heat of vaporization (J/kg) (calculated above)
+// Reference evapotranspiration- grass
+// Penman-Monteith of the combination equation (eq 3 FAO 56) (J/s/m2)
+// For reference ETo, the albedo is 0.23
+var Rns_ref=(ee.Image.constant(1).subtract(ee.Image.constant(0.23))).multiply(Rs) 
+var Rnl_ref=Rnl
+var Rn_ref=Rns_ref.subtract(Rnl_ref)
+
+// convert units of vapour pressure from millibar to KPa
+var es_30m=es_30m.multiply(ee.Image.constant(0.10))
+var e_30m=e_30m.multiply(ee.Image.constant(0.10))
+var tmp=(temp_30m.subtract(ee.Image.constant(273.15)).add(ee.Image.constant(237.3))).pow(2)
+var es_slope =ee.Image.constant(4098).multiply(es_30m).divide(tmp)  //unit is KPa/°C
+var rah_grass = ee.Image.constant(208.0).divide(wind_30m)
+// Psychrometric constant (kPa / °C), FAO 56, eq 8.:
+//var Temp_lapse_rate = 0.0065   // or 0.01199   # Temperature lapse rate (°K/m)
+//var tmp=(ee.Image.constant(293).subtract(ee.Image.constant(Temp_lapse_rate).multiply(DEM_30m))).divide(ee.Image.constant(293))
+//var Pair = ee.Image.constant(101.3).multiply(tmp.pow(5.26))   //units:KPa
+var Psychro_c = ee.Image.constant(0.665).multiply(ee.Image.constant(10).pow(-3)).multiply(Pair)
+var tmp1=ee.Image.constant(1).add(ee.Image.constant(70).divide(rah_grass))
+var tmp2=(tmp1.multiply(Psychro_c)).add(es_slope)
+var tmp3=air_dens.multiply(ee.Image.constant(1004)).multiply(es_30m.subtract(e_30m)).divide(rah_grass)
+var LET_ref_24 =(es_slope.multiply(Rn_ref).add(tmp3)).divide(tmp2)
+var tmp=ee.Image.constant(0.002361).multiply(Surface_temp.subtract(ee.Image.constant(273.15)))
+// calculate lamda or latent heat vaporization for latent heat
+var Lhv = (ee.Image.constant(2.501).subtract(tmp)).multiply(ee.Image.constant(10).pow(6))
+// Reference evaportranspiration (mm/day):
+var ETref_24 = LET_ref_24.divide(Lhv.multiply(ee.Image.constant(1000))).multiply(ee.Image.constant(86400000))
+// Map.addLayer(ETref_24,{},'ETref')
+// Potential Evapotranspiration mm/day)
+// Penman-Monteith of the combination equation (eq 3 FAO 56) (J/s/m2)
+//rah_pm_act=((np.log((2.0-0.0)/(Surf_roughness*0.1))*np.log((2.0-0.0)/(Surf_roughness)))/(k_vk*1.5**2))*((1-5*(-9.82*dT*(2.0-0.0))/((273.15+Temp_inst)*1.5**2))**(-0.75))
+//rah_pm_act[rah_pm_act<25]=25
+//var LETpot_24 = ((sl_es_24 * (Rn_24 - Refl_rad_water) + air_dens * 1004 *(esat_24 - eact_24)/rah_pm_pot) / (sl_es_24 + Psychro_c * (1 + rs_min/rah_pm_pot)))
+//var ETpot_24 = LETpot_24 / (Lhv * 1000) * 86400000
+//var ETpot_24[ETpot_24 > 15.0] = 15.0
+ETref_24=ETref_24.select('constant').rename('etr')
+// Export.image.toDrive({
+//   image: ETref_24,
+//   description: 'penmankannagaug2015',
+//   scale: 1000,
+//   region: ROI
+// });
+var medET_ref= ETref_24.reduceRegion({
+  reducer: ee.Reducer.median(),
+  geometry: ROI_2,
+  scale: res,
+  maxPixels: 1e11
+});
+//print(ETA_24)
+print('Median ETref=',medET_ref.get('etr').getInfo())
+
+/////////////////********END of Module (10) Reference ET********/////////////////
+
+/////////////////********Module (11) Actual ET********/////////////////
+// Evaporative Fraction (crop coefficient)
+
+
+var LE= Rn.subtract(G).subtract(H)   // Latent Heat
+
+var EF= LE.divide(Rn.subtract(G))    // Evaporative fraction
+var tmp=ee.Image.constant(0.002361).multiply(Surface_temp.subtract(ee.Image.constant(273.15)))
+// calculate lamda or latent heat vaporization for latent heat
+var Lhv = (ee.Image.constant(2.501).subtract(tmp)).multiply(ee.Image.constant(10).pow(6))
+var ETA_24 = EF.multiply(Rn).divide(Lhv.multiply(ee.Image.constant(1000))).multiply(ee.Image.constant(86400000))
+ETA_24=ETA_24.select('constant').rename('eta')
+var ETA_24_mask=ETA_24.updateMask(ETA_24.lt(15))
+var ETA_24_mask=ETA_24_mask.updateMask(ETA_24.gte(1))
+//var ETA_24_mask=ETA_24_mask.unmask(0)
+//var ETA_24_mask=ETA_24_mask.updateMask(NDVI.gte(0.2)).unmask(0)
+//Map.addLayer(NDVI,{},'NDVI')
+
+Export.image.toDrive({
+  image: ETA_24,
+  description: 'Sar2018',
+  scale: 1000,
+  region: ROI
+});
+Map.addLayer(ETA_24_mask.clip(ROI),{},'ETA_24')
+var totET= ETA_24_mask.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: ROI_2,
+  scale: res,
+  maxPixels: 1e11
+});
+//print(ETA_24)
+print('Total ETc=',totET.get('eta').getInfo())
+
+var avgET= ETA_24_mask.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: ROI_2,
+  scale: res,
+  maxPixels: 1e11
+});
+//print(ETA_24)
+print('AVG ETc=',avgET.get('eta').getInfo())
+Map.addLayer(multiPoint)
+/////////////////********END of Module (11) Actual ET********/////////////////
+
